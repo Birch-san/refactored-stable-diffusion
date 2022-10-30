@@ -1,6 +1,9 @@
 import torch
 
+from sd.models.diffusion import StableDiffusion
+
 class Sampler:
+    model: StableDiffusion
     def __init__(self, unconditional_guidance_scale=1):
         self.unconditional_guidance_scale = unconditional_guidance_scale
     
