@@ -23,68 +23,13 @@ from k_diffusion.sampling import sample_heun, sample_lms, get_sigmas_karras, app
 from k_diffusion.external import DiscreteEpsDDPMDenoiser
 from k_diffusion.utils import append_dims
 
-def repeat_along_dim_0(t: Tensor, factor: int) -> Tensor:
-    """
-    Repeats a tensor's contents along its 0th dim `factor` times.
-
-    repeat_along_dim_0(torch.tensor([[0,1]]), 2)
-    tensor([[0, 1],
-            [0, 1]])
-    # shape changes from (1, 2)
-    #                 to (2, 2)
-    
-    repeat_along_dim_0(torch.tensor([[0,1],[2,3]]), 2)
-    tensor([[0, 1],
-            [2, 3],
-            [0, 1],
-            [2, 3]])
-    # shape changes from (2, 2)
-    #                 to (4, 2)
-    """
-    assert factor >= 1
-    if factor == 1:
-        return t
-    if t.size(dim=0) == 1:
-        # prefer expand() whenever we can, since doesn't copy
-        return t.expand(factor * t.size(dim=0), *(-1,)*(t.ndim-1))
-    return t.repeat((factor, *(1,)*(t.ndim-1)))
-
-# class DiffusionModel(Protocol):
-#     def __call__(self, x: Tensor, sigma: Tensor, **kwargs) -> Tensor: ...
-#     def decode_first_stage(self, latents: Tensor) -> Tensor: ...
-#     def differentiable_decode_first_stage(self, latents: Tensor) -> Tensor: ...
-#     def encode_first_stage(self, pixels: Tensor) -> Tensor: ...
-#     def get_first_stage_encoding(self, encoded: Tensor) -> Tensor: ...
-
-# class DiffusionModelMixin(DiffusionModel):
-#     inner_model: DiffusionModel
-
-#     def decode_first_stage(self, latents: Tensor) -> Tensor:
-#         return self.inner_model.decode_first_stage(latents)
-
-#     def differentiable_decode_first_stage(self, latents: Tensor) -> Tensor:
-#         return self.inner_model.differentiable_decode_first_stage(latents)
-
-#     def encode_first_stage(self, pixels: Tensor) -> Tensor:
-#         return self.inner_model.encode_first_stage(pixels)
-
-#     def get_first_stage_encoding(self, encoded: Tensor) -> Tensor:
-#         return self.inner_model.get_first_stage_encoding(encoded)
-
-# class BaseModelWrapper(nn.Module, DiffusionModelMixin):
-#     inner_model: DiffusionModel
-#     def __init__(self, inner_model: DiffusionModel):
-#         super().__init__()
-#         self.inner_model = inner_model
-#         DiffusionModelMixin.__init__(self)
-
 class KCFGDenoiser(DiscreteEpsDDPMDenoiser):
     inner_model: StableDiffusion
     def __init__(self, model: StableDiffusion):
         super().__init__(model, model.schedule.alphas_cumprod, quantize=True)
     
     def get_eps(self, *args, **kwargs):
-        return self.inner_model.p_sample(*args, **kwargs)
+        return self.inner_model.apply_model(*args, **kwargs)
 
     def forward(
         self,
@@ -95,22 +40,14 @@ class KCFGDenoiser(DiscreteEpsDDPMDenoiser):
         cond_scale: float,
         **kwargs
     ) -> Tensor:
-        s: Tensor = self.sigma_to_t(sigma)
-        del sigma
         if uncond is None or cond_scale == 1.0:
-            t = repeat_along_dim_0(s, x.size(dim=0))
-            del s
-            # x_noisy = self.inner_model.schedule.q_sample(x_start=x, t=t, noise=None)
-            return self.inner_model.apply_model(x_noisy=x, t=t, cond=cond)
+            return super().forward(input=x, sigma=sigma, cond=cond)
         cond_in = torch.cat([uncond, cond])
         del uncond, cond
-        x_in = repeat_along_dim_0(x, cond_in.size(dim=0))
+        x_in = x.expand(cond_in.size(dim=0), -1, -1, -1)
         del x
-        t = repeat_along_dim_0(s, cond_in.size(dim=0))
-        del s
-        # x_noisy = self.inner_model.schedule.q_sample(x_start=x_in, t=t, noise=None)
-        uncond, cond = self.inner_model.apply_model(x_noisy=x_in, t=t, cond=cond_in).chunk(cond_in.size(dim=0))
-        del x_in, t, cond_in
+        uncond, cond = super().forward(input=x_in, sigma=sigma, cond=cond_in).chunk(cond_in.size(dim=0))
+        del x_in, cond_in
         return uncond + (cond - uncond) * cond_scale
 
 def main():
@@ -215,7 +152,7 @@ def main():
         type=str,
         help='evaluate at this precision',
         choices=['full', 'autocast'],
-        default='autocast'
+        default='full' if get_device_type == 'mps' else 'autocast'
     )
     parser.add_argument(
         '--sampler',
