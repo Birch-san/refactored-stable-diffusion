@@ -33,7 +33,7 @@ class PLMSSampler(DDIMSampler):
     def sample(self, shape=None, cond=None, unconditional_conditioning=None, mask=None, x0=None, x_init=None, t_start=None, t_end=0):
         device = self.model.device
         if x_init is None:
-            x_init = torch.randn(shape, device=device)
+            x_init = torch.randn(shape, device='cpu' if device.type == 'mps' else device).to(device)
         
         self.make_schedule(t_start, t_end)
         time_range = list(zip(self.ddim_timesteps[:-1], self.ddim_timesteps[1:]))

@@ -22,7 +22,7 @@ class DDPMSampler(Sampler):
     def p_sample(self, x, t, cond=None, unconditional_conditioning=None):
         b, *_, device = *x.shape, x.device
         model_mean, model_log_variance = self.p_mean_variance(x, t, cond, unconditional_conditioning)
-        noise = torch.randn(x.shape, device=device)
+        noise = torch.randn(x.shape, device='cpu' if device.type == 'mps' else device).to(device)
         # no noise when t == 0
         model_mask_shape = (b, *((1,) * (len(x.shape) - 1)))
         mask_generator = torch.zeros if t == 0 else torch.ones
@@ -34,7 +34,7 @@ class DDPMSampler(Sampler):
         t_start = t_start or self.model.schedule.num_timesteps-1
         device = self.model.device
         if x_init is None:
-            x_init = torch.randn(shape, device=device)
+            x_init = torch.randn(shape, device='cpu' if device.type == 'mps' else device).to(device)
         
         print(f'Running DDPM Sampling with {self.num_timesteps} timesteps')
         iterator = tqdm(np.linspace(t_start, t_end, self.num_timesteps).astype(int), desc='DDPM Sampler', total=self.num_timesteps)

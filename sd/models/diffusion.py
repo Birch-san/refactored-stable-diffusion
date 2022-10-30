@@ -215,7 +215,7 @@ class StableDiffusion(pl.LightningModule):
         return loss
 
     def forward(self, x, c, *args, **kwargs):
-        t = torch.randint(0, self.schedule.num_timesteps, (x.shape[0],), device=self.device).long()
+        t = torch.randint(0, self.schedule.num_timesteps, (x.shape[0],), device='cpu' if self.device.type == 'mps' else self.device).to(self.device).long()
         # TODO: Is this code in the right place?
         if isinstance(c, dict) or isinstance(c, list):
             c = self.get_learned_conditioning(c)
@@ -241,7 +241,7 @@ class StableDiffusion(pl.LightningModule):
             mask = 1
         
         if noise is None:
-            noise = torch.randn_like(x_start)
+            noise = torch.randn_like(x_start, device='cpu' if x_start.device.type == 'mps' else x_start.device).to(x_start.device)
         x_noisy = self.schedule.q_sample(x_start=x_start*mask, t=t, noise=noise*mask)
         model_output = self.apply_model(x_noisy, t, cond)
 

@@ -70,7 +70,7 @@ class DDIMSampler(Sampler):
         
         # direction pointing to x_t
         dir_xt = np.sqrt(1 - a_prev - sigma_t**2) * e_t
-        noise = sigma_t * torch.randn_like(x)
+        noise = sigma_t * torch.randn_like(x, device='cpu' if x.device.type == 'mps' else x.device).to(x.device)
         x_prev = np.sqrt(a_prev) * pred_x0 + dir_xt + noise
         return x_prev
 
@@ -82,7 +82,7 @@ class DDIMSampler(Sampler):
     def sample(self, shape=None, cond=None, unconditional_conditioning=None, mask=None, x0=None, x_init=None, t_start=None, t_end=0):
         device = self.model.device
         if x_init is None:
-            x_init = torch.randn(shape, device=device)
+            x_init = torch.randn(shape, device='cpu' if device.type == 'mps' else device).to(device)
         
         self.make_schedule(t_start, t_end)
         time_range = list(zip(self.ddim_timesteps[:-1], self.ddim_timesteps[1:]))
