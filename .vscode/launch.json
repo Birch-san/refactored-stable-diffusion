@@ -1,0 +1,36 @@
+{
+  // Use IntelliSense to learn about possible attributes.
+  // Hover to view descriptions of existing attributes.
+  // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Python: txt2img",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/txt2img.py",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "args": [
+        "--ckpt",
+        "/Users/birch/git/stable-diffusion-v1-5/v1-5-pruned-emaonly.ckpt",
+        "--prompt",
+        "masterpiece character portrait of a blonde girl, full resolution, 4k, mizuryuu kei, akihiko. yoshida, Pixiv featured, baroque scenic, by artgerm, sylvain sarrailh, rossdraws, wlop, global illumination, vaporwave",
+        "--skip_grid",
+        "--n_iter", "1",
+        "--n_samples", "1",
+        "--steps", "20",
+        "--sampler", "ddpm",
+        "--W",
+        "512",
+        "--H",
+        "512",
+        "--seed",
+        "68673924"
+      ],
+      "env": {
+        "PYTORCH_ENABLE_MPS_FALLBACK": "1"
+      }
+    },
+  ]
+}
