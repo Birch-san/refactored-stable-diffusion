@@ -1,4 +1,7 @@
-pytorch-lightning
+pytorch-lightning>=1.7.7
 einops
 transformers
 webdataset
+open_clip_torch~=2.0
+clip-anytorch~=2.5.0
+git+https://github.com/Birch-san/k-diffusion.git@mps#egg=k_diffusion

@@ -32,5 +32,35 @@
         "PYTORCH_ENABLE_MPS_FALLBACK": "1"
       }
     },
+    {
+      "name": "Python: txt2img repro",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/txt2img_repro.py",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "args": [
+        "--ckpt",
+        "/Users/birch/git/stable-diffusion-v1-5/v1-5-pruned-emaonly.ckpt",
+        "--prompt",
+        "masterpiece character portrait of a blonde girl, full resolution, 4k, mizuryuu kei, akihiko. yoshida, Pixiv featured, baroque scenic, by artgerm, sylvain sarrailh, rossdraws, wlop, global illumination, vaporwave",
+        "--skip_grid",
+        "--n_iter", "1",
+        "--n_samples", "1",
+        "--steps", "8",
+        "--sampler", "heun",
+        // "--sampler", "ddim",
+        "--scale", "1",
+        "--W",
+        "512",
+        "--H",
+        "512",
+        "--seed",
+        "68673924"
+      ],
+      "env": {
+        "PYTORCH_ENABLE_MPS_FALLBACK": "1"
+      }
+    },
   ]
 }
