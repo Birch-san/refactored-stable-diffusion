@@ -19,6 +19,7 @@ from sd.util import load_model_from_config
 from sd.samplers.ddpm import DDPMSampler
 from sd.samplers.ddim import DDIMSampler
 from sd.samplers.plms import PLMSSampler
+from sd.modules.device import get_device_type
 
 
 def main():
@@ -150,7 +151,7 @@ def main():
         config = {'model': {'target': 'sd.models.diffusion.StableDiffusion'}}
     model = load_model_from_config(config, opt.ckpt, verbose=True, swap_ema=opt.use_ema, no_ema=not opt.use_ema)
 
-    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+    device = torch.device(get_device_type())
     model = model.to(device)
     model.eval()
 
@@ -159,7 +160,7 @@ def main():
     elif opt.sampler == 'ddim':
         sampler = DDIMSampler(num_timesteps=opt.steps, unconditional_guidance_scale=opt.scale, eta=opt.ddim_eta)
     elif opt.sampler == 'plms':
-        sampler = PLMSSampler(num_timesteps=opt.steps, unconditional_guidance_scale=opt.scale, eta=opt.ddim_eta)
+        sampler = PLMSSampler(num_timesteps=opt.steps, unconditional_guidance_scale=opt.scale)
     else:
         raise ValueError(f'Unknown sampler type {opt.sampler}')
 
@@ -184,8 +185,10 @@ def main():
 
     seed_everything(opt.seed)
 
-    precision_scope = autocast if opt.precision=='autocast' else nullcontext
-    with precision_scope('cuda'):
+    precision_scope = autocast if opt.precision=="autocast" else nullcontext
+    if device.type == 'mps':
+        precision_scope = nullcontext # have to use f32 on mps
+    with precision_scope(device.type):
         tic = time.time()
         for prompts in tqdm(data, desc='data'):
             if opt.same_seed:
