@@ -44,6 +44,7 @@ def main():
     x = x_init * 14.614643096923828
     c = torch.ones((1, 77, 768), dtype=torch.float32, device=device)
     target_embed = torch.ones((1, 512), device=device)
+    target_embed = F.normalize(target_embed)
 
     with enable_grad():
         x = x.detach().requires_grad_()
@@ -60,9 +61,6 @@ def main():
         image_embed: Tensor = clip_normalize(image_embed)
         image_embed: Tensor = clip_model.encode_image(image_embed)
         image_embed = F.normalize(image_embed)
-
-        image_embed = F.normalize(image_embed, dim=-1)
-        target_embed = F.normalize(target_embed, dim=-1)
 
         loss: Tensor = (image_embed - target_embed).norm(dim=-1).div(2).arcsin().pow(2).mul(2).sum() * clip_guidance_scale
         grad: Tensor = -torch.autograd.grad(loss, x)[0]
