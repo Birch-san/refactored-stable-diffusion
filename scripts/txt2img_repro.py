@@ -14,11 +14,6 @@ from sd.modules.device import get_device_type
 from sd.models.autoencoder import AutoencoderKL
 from sd.modules.unet import UNetModel
 
-def spherical_dist_loss(x: Tensor, y: Tensor) -> Tensor:
-    x = F.normalize(x, dim=-1)
-    y = F.normalize(y, dim=-1)
-    return (x - y).norm(dim=-1).div(2).arcsin().pow(2).mul(2)
-
 def main():
     device = torch.device(get_device_type())
     
@@ -50,34 +45,26 @@ def main():
     c = torch.ones((1, 77, 768), dtype=torch.float32, device=device)
     target_embed = torch.ones((1, 512), device=device)
 
-    def get_image_embed(x: Tensor) -> Tensor:
-        if x.shape[2:4] != clip_model.visual.image_size:
-            # k-diffusion example used a bicubic resize, via resize_right library
-            # x = resize(x, out_shape=clip_size, pad_mode='reflect')
-            # but diffusers' bilinear resize produced a nicer bear
-            x = transforms.Resize(clip_model.visual.image_size)(x)
-        x: Tensor = clip_normalize(x)
-        x: Tensor = clip_model.encode_image(x).float()
-
-        return F.normalize(x)
-
     with enable_grad():
         x = x.detach().requires_grad_()
         c_in = torch.full((1, 1, 1, 1), 0.0682649165391922, device='mps')
         c_out = torch.full((1, 1, 1, 1), -14.614643096923828, device='mps')
         eps: Tensor = unet.forward(x=x * c_in, timesteps=torch.tensor([999], device=device), context=c)
         denoised: Tensor = x + eps * c_out
-        unscaled = 1. / 0.18215 * x
-        decoded: Tensor = autoencoder.decode(unscaled)
-        del denoised
-        renormalized: Tensor = decoded.add(1).div(2)
-        del decoded
-        clamped: Tensor = renormalized.clamp(0, 1)
-        del renormalized
-        image_embed: Tensor = get_image_embed(clamped)
-        del clamped
-        loss: Tensor = spherical_dist_loss(image_embed, target_embed).sum() * clip_guidance_scale
-        del image_embed
+
+        decoded: Tensor = autoencoder.decode(1. / 0.18215 * denoised)
+        decoded = decoded.add(1).div(2)
+        decoded = decoded.clamp(0, 1)
+
+        image_embed = transforms.Resize(clip_model.visual.image_size)(decoded)
+        image_embed: Tensor = clip_normalize(image_embed)
+        image_embed: Tensor = clip_model.encode_image(image_embed)
+        image_embed = F.normalize(image_embed)
+
+        image_embed = F.normalize(image_embed, dim=-1)
+        target_embed = F.normalize(target_embed, dim=-1)
+
+        loss: Tensor = (image_embed - target_embed).norm(dim=-1).div(2).arcsin().pow(2).mul(2).sum() * clip_guidance_scale
         grad: Tensor = -torch.autograd.grad(loss, x)[0]
         print(f'NaN gradients: {grad.detach().isnan().any().item()}')
 
