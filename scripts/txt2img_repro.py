@@ -5,134 +5,24 @@ import torch
 import numpy as np
 from PIL import Image
 from einops import rearrange
-import yaml
 
 from pytorch_lightning import seed_everything
-from torch import autocast, Tensor, enable_grad
+from torch import __version__, autocast, Tensor, enable_grad
 from torch.nn import functional as F
 from contextlib import nullcontext
-from typing import Protocol, Iterable, Optional, Tuple
+from typing import Optional
 import open_clip
 from open_clip import CLIP as OpenCLIP
 from torchvision import transforms
-from kornia import augmentation as KA
 
-from sd.util import load_model_from_config
-from sd.samplers.ddpm import DDPMSampler
-from sd.samplers.ddim import DDIMSampler
-from sd.samplers.plms import PLMSSampler
 from sd.modules.device import get_device_type
-from sd.models.diffusion import StableDiffusion
-
-from k_diffusion.sampling import sample_heun, sample_lms, get_sigmas_karras, append_zero
-from k_diffusion.external import DiscreteEpsDDPMDenoiser
-from k_diffusion.utils import append_dims
-
-K_DIFF_SAMPLERS = { 'heun', 'lms' }
-
-class KCFGDenoiser(DiscreteEpsDDPMDenoiser):
-    inner_model: StableDiffusion
-    def __init__(self, model: StableDiffusion):
-        super().__init__(model, model.schedule.alphas_cumprod, quantize=True)
-    
-    def get_eps(self, *args, **kwargs):
-        return self.inner_model.apply_model(*args, **kwargs)
-
-    def forward(
-        self,
-        x: Tensor,
-        sigma: Tensor,
-        uncond: Tensor,
-        cond: Tensor, 
-        cond_scale: float,
-        **kwargs
-    ) -> Tensor:
-        if uncond is None or cond_scale == 1.0:
-            return super().forward(input=x, sigma=sigma, cond=cond)
-        cond_in = torch.cat([uncond, cond])
-        del uncond, cond
-        x_in = x.expand(cond_in.size(dim=0), -1, -1, -1)
-        del x
-        uncond, cond = super().forward(input=x_in, sigma=sigma, cond=cond_in).chunk(cond_in.size(dim=0))
-        del x_in, cond_in
-        return uncond + (cond - uncond) * cond_scale
+from sd.models.autoencoder import AutoencoderKL
+from sd.modules.unet import UNetModel
 
 def spherical_dist_loss(x: Tensor, y: Tensor) -> Tensor:
     x = F.normalize(x, dim=-1)
     y = F.normalize(y, dim=-1)
     return (x - y).norm(dim=-1).div(2).arcsin().pow(2).mul(2)
-
-class ClipGuidedDenoiser():
-    denoiser: KCFGDenoiser
-    clip_model: OpenCLIP
-    clip_augmentations: bool
-    clip_guidance_scale: float
-    clip_normalize: transforms.Normalize
-    clip_size: Tuple[int, int]
-    aug: Optional[KA.RandomAffine]
-    def __init__(
-        self,
-        denoiser: KCFGDenoiser,
-        clip_model: OpenCLIP,
-        clip_augmentations: bool,
-        clip_guidance_scale: float,
-    ):
-        self.denoiser = denoiser
-        self.clip_model = clip_model
-        self.clip_size = clip_model.visual.image_size
-        self.clip_augmentations = clip_augmentations
-        self.clip_guidance_scale = clip_guidance_scale
-        self.clip_normalize = transforms.Normalize(mean=clip_model.visual.image_mean, std=clip_model.visual.image_std)
-        self.aug = KA.RandomAffine(0, (1/14, 1/14), p=1, padding_mode='border') if clip_augmentations else None
-
-    @enable_grad()
-    def __call__(self, x: Tensor, sigma: Tensor, target_embed: Tensor, **kwargs) -> Tensor:
-        x = x.detach().requires_grad_()
-        denoised: Tensor = self.denoiser(x, sigma, **kwargs)
-        cond_grad: Tensor = self.cond_fn(x, denoised=denoised, target_embed=target_embed).detach()
-        ndim = x.ndim
-        del x
-        cond_denoised: Tensor = denoised.detach() + cond_grad * append_dims(sigma**2, ndim)
-        return cond_denoised
-
-    def cond_fn(self, x: Tensor, denoised: Tensor, target_embed: Tensor) -> Tensor:
-        device = denoised.device
-        decoded: Tensor = self.denoiser.inner_model.decode_first_stage(denoised)
-        del denoised
-        renormalized: Tensor = decoded.add(1).div(2)
-        del decoded
-        if self.clip_augmentations:
-            # this particular approach to augmentation crashes on MPS, so we transfer to CPU (for now)
-            # :27:11: error: invalid input tensor shapes, indices shape and updates shape must be equal
-            # -:27:11: note: see current operation: %25 = "mps.scatter_along_axis"(%23, %arg3, %24, %1) {mode = 6 : i32} : (tensor<786432xf32>, tensor<512xf32>, tensor<262144xi32>, tensor<i32>) -> tensor<786432xf32>
-            # TODO: this approach (from k-diffusion example) produces just the one augmentation,
-            #       whereas diffusers approach is to use many and sum their losses. should we?
-            renormalized = self.aug(renormalized.cpu()).to(device) if device.type == 'mps' else self.aug(renormalized)
-        clamped: Tensor = renormalized.clamp(0, 1)
-        del renormalized
-        image_embed: Tensor = self.get_image_embed(clamped)
-        del clamped
-        # TODO: does this do the right thing for multi-sample?
-        # TODO: do we want .mean() here or .sum()? or both?
-        #       k-diffusion example used just .sum(), but k-diff was single-aug. maybe that was for multi-sample?
-        #       whereas diffusers uses .mean() (this seemed to be over a single number, but maybe when you have multiple samples it becomes the mean of the loss over your n samples?),
-        #       then uses sum() (which for multi-aug would sum the losses of each aug)
-        loss: Tensor = spherical_dist_loss(image_embed, target_embed).sum() * self.clip_guidance_scale
-        del image_embed
-        # TODO: does this do the right thing for multi-sample?
-        grad: Tensor = -torch.autograd.grad(loss, x)[0]
-        return grad
-    
-    def get_image_embed(self, x: Tensor) -> Tensor:
-        if x.shape[2:4] != self.clip_size:
-            # k-diffusion example used a bicubic resize, via resize_right library
-            # x = resize(x, out_shape=clip_size, pad_mode='reflect')
-            # but diffusers' bilinear resize produced a nicer bear
-            x = transforms.Resize(self.clip_size)(x)
-        x: Tensor = self.clip_normalize(x)
-        x: Tensor = self.clip_model.encode_image(x).float()
-
-        return F.normalize(x)
 
 def main():
     parser = argparse.ArgumentParser()
@@ -302,41 +192,20 @@ def main():
     )
     opt = parser.parse_args()
 
-    if opt.config:
-        config = yaml.safe_load(open(opt.config, 'r'))
-    else:
-        config = {'model': {'target': 'sd.models.diffusion.StableDiffusion'}}
-    model: StableDiffusion = load_model_from_config(config, opt.ckpt, verbose=True, swap_ema=opt.use_ema, no_ema=not opt.use_ema)
-
     device = torch.device(get_device_type())
-    model = model.to(device)
-    model.eval()
-
-    match opt.sampler:
-        case 'ddpm':
-            sampler = DDPMSampler(num_timesteps=opt.steps)
-        case 'ddim':
-            sampler = DDIMSampler(num_timesteps=opt.steps, unconditional_guidance_scale=opt.scale, eta=opt.ddim_eta)
-        case 'plms':
-            sampler = PLMSSampler(num_timesteps=opt.steps, unconditional_guidance_scale=opt.scale)
-        case 'heun' | 'lms':
-            model_k_wrapped = KCFGDenoiser(model)
-            sampler = None
-        case _:
-            raise ValueError(f'Unknown sampler type {opt.sampler}')
     
-    clip_model: Optional[OpenCLIP] = None
-    if opt.clip_guidance:
-        assert opt.sampler in K_DIFF_SAMPLERS
-        clip_model: OpenCLIP = open_clip.create_model(opt.clip_model_name, opt.clip_model_version, device=device)
-        # clip_model: OpenCLIP = open_clip.create_model(opt.clip_model_name, device=device)
-        clip_model.requires_grad_(False)
-        clip_denoiser = ClipGuidedDenoiser(
-            denoiser=model_k_wrapped,
-            clip_model=clip_model,
-            clip_augmentations=opt.clip_augmentations,
-            clip_guidance_scale=opt.clip_guidance_scale,
-        )
+    unet = UNetModel()
+    unet = unet.to(device)
+    for param in unet.parameters():
+        param.requires_grad = False
+    autoencoder = AutoencoderKL()
+    autoencoder = autoencoder.to(device)
+    for param in autoencoder.parameters():
+        param.requires_grad = False
+    
+    clip_model: OpenCLIP = open_clip.create_model(opt.clip_model_name, device=device)
+    clip_model.requires_grad_(False)
+    clip_normalize = transforms.Normalize(mean=clip_model.visual.image_mean, std=clip_model.visual.image_std)
 
     os.makedirs(opt.outdir, exist_ok=True)
     outpath = opt.outdir
@@ -352,10 +221,11 @@ def main():
     precision_scope = autocast if opt.precision=="autocast" else nullcontext
     if device.type == 'mps':
         precision_scope = nullcontext # have to use f32 on mps
+    print(f'torch.__version__: {__version__}')
     with precision_scope(device.type):
         seed_everything(opt.seed)
-        downsample = 2**(model.first_stage_model.encoder.num_resolutions-1)
-        shape = [1, model.first_stage_model.z_channels, opt.H // downsample, opt.W // downsample]
+        downsample = 2**(autoencoder.encoder.num_resolutions-1)
+        shape = [1, autoencoder.z_channels, opt.H // downsample, opt.W // downsample]
         # https://github.com/CompVis/stable-diffusion/issues/25#issuecomment-1229706811
         # MPS random is not currently deterministic w.r.t seed, so compute randn() on-CPU
         x_init = torch.randn(shape, device='cpu').to(device) if device.type == 'mps' else torch.randn(shape, device=device)
@@ -363,49 +233,65 @@ def main():
         prompts, *_ = data
         prompt, *_ = prompts
 
-        match opt.sampler:
-            case 'heun' | 'lms':
-                sigmas=get_sigmas_karras(
-                    n=opt.steps,
-                    sigma_min=model_k_wrapped.sigma_min.cpu(),
-                    sigma_max=model_k_wrapped.sigma_max.cpu()
-                    ).to(device)
-                match opt.sampler:
-                    case 'heun':
-                        sample = sample_heun
-                    case 'lms':
-                        sample = sample_lms
-                first_sigma, *_ = sigmas
-                x = x_init * first_sigma
-                conditions = ['', prompt]
-                uc, c = model.get_learned_conditioning(conditions).chunk(len(conditions))
-                target_embed: Optional[Tensor] = None
-                if opt.clip_guidance:
-                    tokens: Tensor = open_clip.tokenize(opt.clip_prompt or prompts[0]).to(device)
-                    encoded: Tensor = clip_model.encode_text(tokens).to(device)
-                    del tokens
-                    target_embed: Tensor = F.normalize(encoded.float())
-                extra_args = {
-                    'cond': c,
-                    'uncond': uc,
-                    'cond_scale': opt.scale,
-                    'target_embed': target_embed,
-                }
-                denoiser = clip_denoiser if opt.clip_guidance else model_k_wrapped
-                latents = sample(
-                    model=denoiser,
-                    x=x,
-                    sigmas=sigmas,
-                    extra_args=extra_args
-                )
-                x_samples = model.decode_first_stage(latents)
-            case _:
-                x_samples = model.sample(prompts, sampler, x_init=x_init)
+        x = x_init * 14.614643096923828
+        # uc = torch.ones((1, 77, 768), dtype=torch.float32, device=device)
+        c = torch.ones((1, 77, 768), dtype=torch.float32, device=device)
+        target_embed: Optional[Tensor] = None
+        if opt.clip_guidance:
+            target_embed = torch.ones((1, 512), device=device)
+
+        def get_image_embed(x: Tensor) -> Tensor:
+            if x.shape[2:4] != clip_model.visual.image_size:
+                # k-diffusion example used a bicubic resize, via resize_right library
+                # x = resize(x, out_shape=clip_size, pad_mode='reflect')
+                # but diffusers' bilinear resize produced a nicer bear
+                x = transforms.Resize(clip_model.visual.image_size)(x)
+            x: Tensor = clip_normalize(x)
+            x: Tensor = clip_model.encode_image(x).float()
+
+            return F.normalize(x)
+
+        def cond_fn(x: Tensor, denoised: Tensor, target_embed: Tensor) -> Tensor:
+            unscaled = 1. / 0.18215 * x
+            decoded: Tensor = autoencoder.decode(unscaled)
+            del denoised
+            renormalized: Tensor = decoded.add(1).div(2)
+            del decoded
+            clamped: Tensor = renormalized.clamp(0, 1)
+            del renormalized
+            image_embed: Tensor = get_image_embed(clamped)
+            # image_embed: Tensor = torch.ones((1, 512), dtype=x.dtype, device=x.device, requires_grad=True)
+            del clamped
+            # TODO: does this do the right thing for multi-sample?
+            # TODO: do we want .mean() here or .sum()? or both?
+            #       k-diffusion example used just .sum(), but k-diff was single-aug. maybe that was for multi-sample?
+            #       whereas diffusers uses .mean() (this seemed to be over a single number, but maybe when you have multiple samples it becomes the mean of the loss over your n samples?),
+            #       then uses sum() (which for multi-aug would sum the losses of each aug)
+            loss: Tensor = spherical_dist_loss(image_embed, target_embed).sum() * opt.clip_guidance_scale
+            del image_embed
+            # TODO: does this do the right thing for multi-sample?
+            grad: Tensor = -torch.autograd.grad(loss, x)[0]
+            return grad
+
+        with enable_grad():
+            x = x.detach().requires_grad_()
+            c_in = torch.full((1, 1, 1, 1), 0.0682649165391922, device='mps')
+            c_out = torch.full((1, 1, 1, 1), -14.614643096923828, device='mps')
+            eps: Tensor = unet.forward(x=x * c_in, timesteps=torch.tensor([999], device=device), context=c)
+            denoised: Tensor = x + eps * c_out
+            cond_grad: Tensor = cond_fn(x, denoised=denoised, target_embed=target_embed).detach()
+            print(f'NaN gradients: {cond_grad.isnan().any().item()}')
+            del x
+            cond_denoised: Tensor = denoised.detach() + cond_grad * torch.full((1, 1, 1, 1), 14.614643096923828**2, device='mps')
+
+        unscaled = 1. / 0.18215 * cond_denoised
+        x_samples = autoencoder.decode(unscaled)
         x_samples = torch.clamp((x_samples + 1.0) / 2.0, min=0.0, max=1.0).cpu()
 
         x_sample, *_ = x_samples
         x_sample = 255 * rearrange(x_sample.cpu().numpy(), 'c h w -> h w c')
         Image.fromarray(x_sample.astype(np.uint8)).save(os.path.join(sample_path, f'{base_count:05}.{opt.seed}.png'))
+        print("Didn't crash")
 
 
 if __name__ == '__main__':
