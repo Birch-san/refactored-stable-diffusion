@@ -39,31 +39,7 @@
       "program": "${workspaceFolder}/scripts/txt2img_repro.py",
       "console": "integratedTerminal",
       "justMyCode": true,
-      "args": [
-        "--ckpt",
-        "/Users/birch/git/stable-diffusion-v1-5/v1-5-pruned-emaonly.ckpt",
-        "--clip_guidance",
-        "--clip_guidance_scale", "100",
-        "--prompt",
-        "photo of a plush teddy bear",
-        // "masterpiece character portrait of a blonde girl, full resolution, 4k, mizuryuu kei, akihiko. yoshida, Pixiv featured, baroque scenic, by artgerm, sylvain sarrailh, rossdraws, wlop, global illumination, vaporwave",
-        "--clip_prompt",
-        "photo of a red plush teddy bear sitting on a windowsill at night holding a glass of wine",
-        "--skip_grid",
-        "--n_iter", "1",
-        "--n_samples", "1",
-        "--steps", "1",
-        "--sampler", "lms",
-        // "--sampler", "ddim",
-        "--scale", "1",
-        "--W",
-        "128",
-        "--H",
-        "128",
-        "--seed",
-        // "68673924",
-        "2400270449"
-      ],
+      "args": [],
       "env": {
         "PYTORCH_ENABLE_MPS_FALLBACK": "1"
       }
