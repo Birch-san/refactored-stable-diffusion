@@ -5,9 +5,8 @@ import torch
 
 from pytorch_lightning import seed_everything
 from torch import __version__, Tensor, enable_grad
-from torch.nn import functional as F
-import open_clip
-from open_clip import CLIP as OpenCLIP
+from torch.nn import functional as F, GELU
+from open_clip.model import VisualTransformer
 from torchvision import transforms
 
 from sd.modules.device import get_device_type
@@ -19,16 +18,24 @@ def main():
     
     unet = UNetModel()
     unet = unet.to(device)
-    for param in unet.parameters():
-        param.requires_grad = False
+    unet.requires_grad_(False)
     autoencoder = AutoencoderKL()
     autoencoder = autoencoder.to(device)
-    for param in autoencoder.parameters():
-        param.requires_grad = False
-    
-    clip_model: OpenCLIP = open_clip.create_model('ViT-B-32', device=device)
-    clip_model.requires_grad_(False)
-    clip_normalize = transforms.Normalize(mean=clip_model.visual.image_mean, std=clip_model.visual.image_std)
+    autoencoder.requires_grad_(False)
+
+    clip_vit = VisualTransformer(
+        image_size=224,
+        patch_size=16,
+        width=768,
+        layers=12,
+        heads=12,
+        mlp_ratio=4.0,
+        output_dim=512,
+        act_layer=GELU,
+    )
+    clip_vit = clip_vit.to(device)
+    clip_vit.requires_grad_(False)
+    clip_normalize = transforms.Normalize(mean=(0.48145466, 0.4578275, 0.40821073), std=(0.26862954, 0.26130258, 0.27577711))
     clip_guidance_scale = 100
 
     print(f'torch.__version__: {__version__}')
@@ -57,9 +64,9 @@ def main():
         decoded = decoded.add(1).div(2)
         decoded = decoded.clamp(0, 1)
 
-        image_embed = transforms.Resize(clip_model.visual.image_size)(decoded)
+        image_embed = transforms.Resize(clip_vit.image_size)(decoded)
         image_embed: Tensor = clip_normalize(image_embed)
-        image_embed: Tensor = clip_model.encode_image(image_embed)
+        image_embed: Tensor = clip_vit.forward(image_embed)
         image_embed = F.normalize(image_embed)
 
         loss: Tensor = (image_embed - target_embed).norm(dim=-1).div(2).arcsin().pow(2).mul(2).sum() * clip_guidance_scale
