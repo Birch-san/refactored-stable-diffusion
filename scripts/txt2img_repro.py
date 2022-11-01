@@ -4,7 +4,7 @@ sys.path.append(os.getcwd())
 import torch
 
 from pytorch_lightning import seed_everything
-from torch import __version__, Tensor, enable_grad
+from torch import __version__, Tensor, enable_grad, autograd
 from torch.nn import functional as F, GELU
 from open_clip.model import VisualTransformer
 from torchvision import transforms
@@ -58,7 +58,8 @@ def main():
     target_embed = torch.ones((1, 512), device=device)
     target_embed = F.normalize(target_embed)
 
-    with enable_grad():
+
+    with enable_grad(), autograd.detect_anomaly():
         x = x.detach().requires_grad_()
         c_in = torch.full((1, 1, 1, 1), 0.0682649165391922, device='mps')
         c_out = torch.full((1, 1, 1, 1), -14.614643096923828, device='mps')
@@ -75,7 +76,7 @@ def main():
         image_embed = F.normalize(image_embed)
 
         loss: Tensor = (image_embed - target_embed).norm(dim=-1).div(2).arcsin().pow(2).mul(2).sum() * clip_guidance_scale
-        grad: Tensor = -torch.autograd.grad(loss, x)[0]
+        grad: Tensor = -autograd.grad(loss, x)[0]
         print(f'NaN gradients: {grad.detach().isnan().any().item()}')
 
     print("Didn't crash")
