@@ -5,12 +5,12 @@ import torch
 
 from pytorch_lightning import seed_everything
 from torch import __version__, Tensor, enable_grad, autograd
-from torch.nn import functional as F, GELU
+from torch.nn import functional as F, GELU, Conv2d
 from open_clip.model import VisualTransformer
 from torchvision import transforms
 
 from sd.modules.device import get_device_type
-from sd.models.autoencoder import AutoencoderKL
+from sd.modules.encoder import Decoder
 from sd.modules.unet import UNetModel
 
 def main():
@@ -24,9 +24,13 @@ def main():
     )
     unet = unet.to(device)
     unet.requires_grad_(False)
-    autoencoder = AutoencoderKL()
-    autoencoder = autoencoder.to(device)
-    autoencoder.requires_grad_(False)
+
+    encoder_z_channels=4
+    encoder_num_resolutions=4
+    post_quant_conv = Conv2d(4, encoder_z_channels, 1, device=device)
+    decoder = Decoder()
+    decoder = decoder.to(device)
+    decoder.requires_grad_(False)
 
     clip_vit = VisualTransformer(
         image_size=224,
@@ -45,10 +49,10 @@ def main():
 
     print(f'torch.__version__: {__version__}')
     seed_everything(2400270449)
-    downsample = 2**(autoencoder.encoder.num_resolutions-1)
+    downsample = 2**(encoder_num_resolutions-1)
     width = 128
     height = 128
-    shape = [1, autoencoder.z_channels, height // downsample, width // downsample]
+    shape = [1, encoder_z_channels, height // downsample, width // downsample]
     # https://github.com/CompVis/stable-diffusion/issues/25#issuecomment-1229706811
     # MPS random is not currently deterministic w.r.t seed, so compute randn() on-CPU
     x_init = torch.randn(shape, device='cpu').to(device) if device.type == 'mps' else torch.randn(shape, device=device)
@@ -59,14 +63,16 @@ def main():
     target_embed = F.normalize(target_embed)
 
 
-    with enable_grad(), autograd.detect_anomaly():
+    with enable_grad():#, autograd.detect_anomaly():
         x = x.detach().requires_grad_()
         c_in = torch.full((1, 1, 1, 1), 0.0682649165391922, device='mps')
         c_out = torch.full((1, 1, 1, 1), -14.614643096923828, device='mps')
         eps: Tensor = unet.forward(x=x * c_in, timesteps=torch.tensor([999], device=device), context=c)
         denoised: Tensor = x + eps * c_out
 
-        decoded: Tensor = autoencoder.decode(1. / 0.18215 * denoised)
+        denoised = 1. / 0.18215 * denoised
+        denoised = post_quant_conv(denoised)
+        decoded: Tensor = decoder.forward(denoised)
         decoded = decoded.add(1).div(2)
         decoded = decoded.clamp(0, 1)
 
