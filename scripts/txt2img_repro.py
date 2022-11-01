@@ -16,7 +16,12 @@ from sd.modules.unet import UNetModel
 def main():
     device = torch.device(get_device_type())
     
-    unet = UNetModel()
+    unet = UNetModel(
+        num_res_blocks=0,
+        channel_mult=[],
+        num_heads=1,
+        attention_resolutions=[1]
+    )
     unet = unet.to(device)
     unet.requires_grad_(False)
     autoencoder = AutoencoderKL()
