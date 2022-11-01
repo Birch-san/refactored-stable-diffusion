@@ -11,19 +11,9 @@ from torchvision import transforms
 
 from sd.modules.device import get_device_type
 from sd.modules.encoder import Decoder
-from sd.modules.unet import UNetModel
 
 def main():
     device = torch.device(get_device_type())
-    
-    unet = UNetModel(
-        num_res_blocks=0,
-        channel_mult=[],
-        num_heads=1,
-        attention_resolutions=[1]
-    )
-    unet = unet.to(device)
-    unet.requires_grad_(False)
 
     encoder_z_channels=4
     encoder_num_resolutions=4
@@ -58,19 +48,14 @@ def main():
     x_init = torch.randn(shape, device='cpu').to(device) if device.type == 'mps' else torch.randn(shape, device=device)
 
     x = x_init * 14.614643096923828
-    c = torch.ones((1, 77, 768), dtype=torch.float32, device=device)
     target_embed = torch.ones((1, 512), device=device)
     target_embed = F.normalize(target_embed)
 
 
     with enable_grad():#, autograd.detect_anomaly():
         x = x.detach().requires_grad_()
-        c_in = torch.full((1, 1, 1, 1), 0.0682649165391922, device='mps')
-        c_out = torch.full((1, 1, 1, 1), -14.614643096923828, device='mps')
-        eps: Tensor = unet.forward(x=x * c_in, timesteps=torch.tensor([999], device=device), context=c)
-        denoised: Tensor = x + eps * c_out
 
-        denoised = 1. / 0.18215 * denoised
+        denoised = 1. / 0.18215 * x
         denoised = post_quant_conv(denoised)
         decoded: Tensor = decoder.forward(denoised)
         decoded = decoded.add(1).div(2)
