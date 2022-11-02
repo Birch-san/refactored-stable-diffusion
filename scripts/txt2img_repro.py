@@ -5,10 +5,16 @@ import torch
 
 from pytorch_lightning import seed_everything
 from torch import __version__, Tensor, enable_grad, autograd
-from torch.nn import functional as F, Conv2d, Linear
+from torch.nn import functional as F, Conv2d, Linear, GroupNorm
+from typing import Literal
 
-from sd.modules.device import get_device_type
-from sd.modules.encoder import Decoder
+def get_device_type() -> Literal['cuda', 'mps', 'cpu']:
+    if(torch.cuda.is_available()):
+        return 'cuda'
+    elif(torch.backends.mps.is_available()):
+        return 'mps'
+    else:
+        return 'cpu'
 
 def main():
     device = torch.device(get_device_type())
@@ -16,9 +22,6 @@ def main():
     encoder_z_channels=4
     encoder_num_resolutions=4
     post_quant_conv = Conv2d(4, encoder_z_channels, 1, device=device)
-    decoder = Decoder()
-    decoder = decoder.to(device)
-    decoder.requires_grad_(False)
 
     print(f'torch.__version__: {__version__}')
     seed_everything(2400270449)
@@ -35,20 +38,29 @@ def main():
     target_embed = F.normalize(target_embed)
 
     silly_vit = Linear(3*128**2, 512, device=device)
+    conv_in = Conv2d(4, 128, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), device=device)
+    conv_out = Conv2d(128, 3, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), device=device)
+    norm = GroupNorm(32, 128, eps=1e-6, affine=True, device=device)
+    norm_out = GroupNorm(32, 128, eps=1e-06, affine=True, device=device)
 
     with enable_grad():#, autograd.detect_anomaly():
         x = x.detach().requires_grad_()
 
         denoised = 1. / 0.18215 * x
         denoised = post_quant_conv(denoised)
-        decoded: Tensor = decoder.forward(denoised)
-        decoded = decoded.add(1).div(2)
-        decoded = decoded.clamp(0, 1)
+
+        decoded = conv_in(denoised)
+        decoded = decoded+norm(decoded)
+        decoded = decoded+norm(decoded)
+        decoded = decoded+norm(decoded)
+        decoded = F.interpolate(decoded, scale_factor=8.0, mode="nearest")
+        decoded = norm_out(decoded)
+        decoded = conv_out(decoded)
 
         image_embed = silly_vit(decoded.flatten(1))
         image_embed = F.normalize(image_embed)
 
-        loss: Tensor = (image_embed - target_embed).norm(dim=-1).div(2).arcsin().pow(2).mul(2).sum()
+        loss: Tensor = (image_embed - target_embed).norm(dim=-1).sum()
         grad: Tensor = -autograd.grad(loss, x)[0]
         print(f'NaN gradients: {grad.detach().isnan().any().item()}')
 
