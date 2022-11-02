@@ -1,6 +1,3 @@
-import sys, os
-sys.path.append(os.getcwd())
-
 import torch
 
 from torch import __version__, Tensor, enable_grad, autograd
@@ -18,20 +15,20 @@ conv_in = Conv2d(4, 128, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), devi
 conv_out = Conv2d(128, 3, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), device=device)
 norm = GroupNorm(32, 128, eps=1e-6, affine=True, device=device)
 
-with enable_grad():#, autograd.detect_anomaly():
+with enable_grad(), autograd.detect_anomaly():
     x = x.detach().requires_grad_()
 
-    denoised = 5.5 * x
+    out = 5.5 * x
 
-    decoded = conv_in(denoised)
-    decoded = decoded+norm(decoded)
-    decoded = decoded+norm(decoded)
-    decoded = decoded+norm(decoded)
-    decoded = F.interpolate(decoded, scale_factor=8.0, mode="nearest")
-    decoded = norm(decoded)
-    decoded = conv_out(decoded)
+    out = conv_in(out)
+    out = out+norm(out)
+    out = out+norm(out)
+    out = out+norm(out)
+    out = F.interpolate(out, scale_factor=8.0, mode="nearest")
+    out = norm(out)
+    out = conv_out(out)
 
-    loss: Tensor = (decoded - target).norm(dim=-1).sum()
+    loss: Tensor = (out - target).norm(dim=-1).sum()
     grad: Tensor = -autograd.grad(loss, x)[0]
     assert not grad.detach().isnan().any().item(), 'NaN gradients returned by autograd'
 
