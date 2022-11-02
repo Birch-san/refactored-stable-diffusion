@@ -34,10 +34,8 @@ def main():
     x_init = torch.randn(shape, device='cpu').to(device) if device.type == 'mps' else torch.randn(shape, device=device)
 
     x = x_init * 14.614643096923828
-    target_embed = torch.ones((1, 512), device=device)
-    target_embed = F.normalize(target_embed)
+    target = torch.ones((1, 3, 128, 128), device=device)
 
-    silly_vit = Linear(3*128**2, 512, device=device)
     conv_in = Conv2d(4, 128, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), device=device)
     conv_out = Conv2d(128, 3, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), device=device)
     norm = GroupNorm(32, 128, eps=1e-6, affine=True, device=device)
@@ -46,7 +44,7 @@ def main():
     with enable_grad():#, autograd.detect_anomaly():
         x = x.detach().requires_grad_()
 
-        denoised = 1. / 0.18215 * x
+        denoised = 5.5 * x
         denoised = post_quant_conv(denoised)
 
         decoded = conv_in(denoised)
@@ -57,10 +55,7 @@ def main():
         decoded = norm_out(decoded)
         decoded = conv_out(decoded)
 
-        image_embed = silly_vit(decoded.flatten(1))
-        image_embed = F.normalize(image_embed)
-
-        loss: Tensor = (image_embed - target_embed).norm(dim=-1).sum()
+        loss: Tensor = (decoded - target).norm(dim=-1).sum()
         grad: Tensor = -autograd.grad(loss, x)[0]
         print(f'NaN gradients: {grad.detach().isnan().any().item()}')
 
